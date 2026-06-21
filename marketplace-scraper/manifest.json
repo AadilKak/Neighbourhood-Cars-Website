@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Marketplace Scraper Tester",
+  "version": "1.6",
+  "description": "Scrapes a Facebook Marketplace listing and saves it to the dealer site.",
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "alarms",
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://www.facebook.com/*",
+    "https://*.fbcdn.net/*",
+    "https://marketplace-system-lf78.onrender.com/*",
+    "http://localhost:8000/*",
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8020/*",
+    "http://127.0.0.1:8020/*"
+  ]
+}
