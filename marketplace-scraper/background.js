@@ -4,6 +4,7 @@ const DEFAULT_DEALER_KEY = "nuc2024";
 const DEFAULT_FACEBOOK_PROFILE_URL = "https://www.facebook.com/marketplace/profile/100057362652664";
 const AUTO_ALARM = "nuc-auto-enrich";
 const AUTO_INTERVAL_MINUTES = 30;
+const MAX_PROFILE_LISTING_CANDIDATES = 6;
 
 let isAutoRunning = false;
 let cancelRequested = false;
@@ -355,6 +356,11 @@ async function runProfileScanOnly(manual) {
     const scannedCount = rawCards.length || listings.length;
     if (!scannedCount) {
       const message = "Profile scan captured no Marketplace listing candidates.";
+      await saveLastAuto(message);
+      return { ok: false, message };
+    }
+    if (scannedCount > MAX_PROFILE_LISTING_CANDIDATES) {
+      const message = `Profile scan stopped: captured ${scannedCount} listing candidates, which is more than the ${MAX_PROFILE_LISTING_CANDIDATES}-listing safety limit. Nothing was imported.`;
       await saveLastAuto(message);
       return { ok: false, message };
     }
@@ -797,7 +803,7 @@ async function profileScanRoutine() {
       return Array.from(document.querySelectorAll(
         '[role="heading"], h1, h2, h3, h4, span[dir="auto"], [aria-level]'
       )).map(el => ({
-        text: (el.textContent || '').replace(/s+/g, ' ').trim(),
+        text: (el.textContent || '').replace(/\s+/g, ' ').trim(),
         y: el.getBoundingClientRect().top + window.scrollY,
       })).filter(item => item.text);
     }
