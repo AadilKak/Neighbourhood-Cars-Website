@@ -71,6 +71,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     requestStopCurrentRun().then(sendResponse);
     return true;
   }
+
+  if (message.type === "NUC_CAPTURE_CURRENT_PUPPET") {
+    captureCurrentPuppetListing().then(sendResponse);
+    return true;
+  }
 });
 
 async function requestStopCurrentRun() {
@@ -257,6 +262,20 @@ function importFbSyncEndpoint(settings) {
   return `${settings.apiBase}/api/import-fb-sync`;
 }
 
+function puppetProfileScanEndpoint(settings) {
+  if (settings.dealerSlug) {
+    return `${settings.apiBase}/api/dealers/${encodeURIComponent(settings.dealerSlug)}/puppet/profile-scan`;
+  }
+  return `${settings.apiBase}/api/puppet/profile-scan`;
+}
+
+function puppetRawListingEndpoint(settings) {
+  if (settings.dealerSlug) {
+    return `${settings.apiBase}/api/dealers/${encodeURIComponent(settings.dealerSlug)}/puppet/raw-listing`;
+  }
+  return `${settings.apiBase}/api/puppet/raw-listing`;
+}
+
 async function fetchExtensionConfig(settings) {
   let privateConfig = {};
   try {
@@ -332,12 +351,14 @@ async function runProfileScanOnly(manual) {
     const scan = await scanProfileUrl(profileUrl);
     throwIfCancelled();
     const listings = scan.listings || [];
-    if (!listings.length) {
-      const message = "Profile scan found no Marketplace listings.";
+    const rawCards = scan.raw_cards || [];
+    const scannedCount = rawCards.length || listings.length;
+    if (!scannedCount) {
+      const message = "Profile scan captured no Marketplace listing candidates.";
       await saveLastAuto(message);
       return { ok: false, message };
     }
-    const importResult = await importProfileListings(listings, settings);
+    const importResult = await importProfileScan(scan, settings);
     throwIfCancelled();
     const customerSyncResult = await syncCustomerBackend(settings, dealer);
     throwIfCancelled();
@@ -346,12 +367,12 @@ async function runProfileScanOnly(manual) {
 
     const customerMessage = customerSyncResult?.skipped ? "" : `Customer backend synced ${customerSyncResult.total_received || 0} listing(s).`;
     const inventoryMessage = inventoryResult?.skipped ? "" : `Backend inventory: ${inventoryResult.active} active / ${inventoryResult.total} total.`;
-    const message = `Profile scan found ${listings.length} Facebook listing(s). ${importResult.message || ""} ${customerMessage} ${inventoryMessage}`.trim();
+    const message = `Profile scan captured ${scannedCount} Facebook listing candidate(s). ${importResult.message || ""} ${customerMessage} ${inventoryMessage}`.trim();
     await saveLastAuto(message);
     return {
       ok: true,
       message,
-      scanned: listings.length,
+      scanned: scannedCount,
       importResult,
       customerSyncResult,
       inventoryResult,
@@ -396,46 +417,22 @@ async function runLocalNodriverSync(settings) {
   };
 }
 
-async function importProfileListings(listings, settings) {
-  if (isCustomerBackend(settings)) {
-    const payload = {
-      mark_missing_sold: true,
-      listings: listings.map((item) => ({
-        title: item.title || "Untitled listing",
-        price: item.price || "",
-        mileage: "See FB listing",
-        transmission: "See FB listing",
-        description: item.description || "",
-        facebook_source_url: item.fb_url || item.facebook_source_url || null,
-        permanent_photos: item.photos || [],
-        details: {},
-        is_sold: !!item.is_sold,
-      })),
-    };
-    const response = await fetch(`${settings.apiBase}/api/sync/facebook`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${settings.dealerKey}`,
-      },
-      body: JSON.stringify(payload),
-    });
-    if (!response.ok) throw new Error(`Customer profile import failed: ${response.status}`);
-    const result = await response.json();
-    return {
-      status: "success",
-      message: `Synced ${result.created || 0} new, ${result.marked_sold || 0} sold.`,
-      ...result,
-    };
-  }
-
-  const response = await fetch(importFbSyncEndpoint(settings), {
+async function importProfileScan(scan, settings) {
+  const puppetResponse = await fetch(puppetProfileScanEndpoint(settings), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ key: settings.dealerKey, listings }),
+    body: JSON.stringify({
+      key: settings.dealerKey,
+      profile_url: scan.profile_url || "",
+      page_text: scan.page_text || "",
+      html: scan.html || "",
+      headings: scan.headings || [],
+      raw_cards: scan.raw_cards || [],
+      listings: scan.listings || [],
+    }),
   });
-  if (!response.ok) throw new Error(`Profile import failed: ${response.status}`);
-  return response.json();
+  if (!puppetResponse.ok) throw new Error(`Puppet profile import failed: ${puppetResponse.status}`);
+  return puppetResponse.json();
 }
 
 async function syncCustomerBackend(settings, dealer) {
@@ -530,19 +527,19 @@ async function scrapeListingUrl(url, settings) {
 
     const results = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      function: localScraperRoutine,
+      function: puppetRawCaptureRoutine,
     });
 
-    const scrapedData = results && results[0] && results[0].result;
-    if (!scrapedData || scrapedData.success === false) {
-      throw new Error((scrapedData && scrapedData.error) || "Facebook scrape failed.");
+    const rawData = results && results[0] && results[0].result;
+    if (!rawData || rawData.success === false) {
+      throw new Error((rawData && rawData.error) || "Facebook raw capture failed.");
     }
 
-    if (scrapedData.images && scrapedData.images.length) {
-      scrapedData.images = await toDataUrls(scrapedData.images);
+    if (rawData.images && rawData.images.length) {
+      rawData.images = await toDataUrls(rawData.images);
     }
 
-    const saveResult = await saveScrapedListing(scrapedData, settings);
+    const saveResult = await savePuppetRawListing(rawData, settings);
     if (!saveResult.ok) throw new Error(`Save failed: ${saveResult.status}`);
 
     await delay(1200, true);
@@ -559,40 +556,51 @@ async function scrapeListingUrl(url, settings) {
   }
 }
 
-async function saveScrapedListing(scrapedData, settings) {
-  if (isCustomerBackend(settings)) {
-    const payload = {
-      mark_missing_sold: false,
-      listings: [{
-        title: scrapedData.title || "Untitled listing",
-        price: scrapedData.price || "",
-        mileage: scrapedData.mileage || "",
-        transmission: scrapedData.transmission || "",
-        description: scrapedData.description || "",
-        facebook_source_url: scrapedData.url || null,
-        details: scrapedData.details || {},
-        images: (scrapedData.images || []).map((dataUrl, index) => ({
-          filename: `listing-${index + 1}.jpg`,
-          content_type: "image/jpeg",
-          data_base64: dataUrl,
-        })),
-      }],
-    };
-    return fetch(`${settings.apiBase}/api/sync/facebook`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${settings.dealerKey}`,
-      },
-      body: JSON.stringify(payload),
-    });
+async function captureCurrentPuppetListing() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !tab.url || !tab.url.includes("facebook.com/marketplace/item/")) {
+    return { ok: false, message: "Open a real Marketplace item page first." };
   }
 
-  scrapedData.key = settings.dealerKey;
-  return fetch(listingEndpoint(settings), {
+  try {
+    const settings = await getDealerSettings();
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      function: puppetRawCaptureRoutine,
+    });
+    const rawData = results && results[0] && results[0].result;
+    if (!rawData || rawData.success === false) {
+      throw new Error((rawData && rawData.error) || "Facebook raw capture failed.");
+    }
+    if (rawData.images && rawData.images.length) {
+      rawData.images = await toDataUrls(rawData.images);
+    }
+    const response = await savePuppetRawListing(rawData, settings);
+    let body = {};
+    try { body = await response.json(); } catch (e) {}
+    if (!response.ok) return { ok: false, message: `Backend error: ${response.status}` };
+    return {
+      ok: true,
+      message: `Puppet raw capture saved at ${settings.apiBase}: ${body.status || "ok"} (${body.photos ?? "?"} photo(s)).`,
+    };
+  } catch (err) {
+    return { ok: false, message: "Puppet capture error: " + (err && err.message ? err.message : String(err)) };
+  }
+}
+
+async function savePuppetRawListing(rawData, settings) {
+  const payload = {
+    key: settings.dealerKey,
+    url: rawData.url || "",
+    raw_title: rawData.raw_title || "",
+    page_text: rawData.page_text || "",
+    html: rawData.html || "",
+    images: rawData.images || [],
+  };
+  return fetch(puppetRawListingEndpoint(settings), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(scrapedData),
+    body: JSON.stringify(payload),
   });
 }
 
@@ -657,39 +665,10 @@ async function blobToDataUrl(blob) {
   return `data:${blob.type || "image/jpeg"};base64,${btoa(binary)}`;
 }
 
-async function localScraperRoutine() {
+async function puppetRawCaptureRoutine() {
   try {
     const modalElement = Array.from(document.querySelectorAll('div[role="dialog"]')).find(el => el.getBoundingClientRect().width > 500);
     const activeContext = modalElement ? modalElement : document.body;
-
-    let rawTitle = "";
-    if (modalElement) {
-      const h1El = modalElement.querySelector('h1');
-      if (h1El) rawTitle = h1El.innerText;
-    }
-    if (!rawTitle) {
-      rawTitle = document.querySelector('meta[property="og:title"]')?.content || document.title;
-    }
-
-    let cleanTitle = rawTitle
-      .replace(/^\(\d+\)\s*Marketplace\s*-\s*/i, "")
-      .replace(/^Marketplace\s*-\s*/i, "")
-      .replace(/\s*\|\s*Facebook$/i, "");
-
-    const pageText = activeContext.innerText || "";
-
-    let price = "Not Found";
-    const priceMatch = pageText.match(/\$[0-9,]+/);
-    if (priceMatch) price = priceMatch[0];
-
-    let mileage = "Not Found";
-    let transmission = "Not Found";
-
-    const mileageMatch = pageText.match(/Driven\s+([0-9,]+)\s+miles/i);
-    if (mileageMatch) mileage = mileageMatch[1] + " miles";
-
-    if (pageText.match(/Automatic\s+transmission/i)) transmission = "Automatic";
-    if (pageText.match(/Manual\s+transmission/i)) transmission = "Manual";
 
     try {
       const seeMore = Array.from(activeContext.querySelectorAll('span, div[role="button"]'))
@@ -697,89 +676,36 @@ async function localScraperRoutine() {
       if (seeMore) { seeMore.click(); await new Promise(r => setTimeout(r, 400)); }
     } catch (e) {}
 
-    function _descFromDom() {
-      const heads = Array.from(activeContext.querySelectorAll('span, h2, h3, div'));
-      const head = heads.find(el => {
-        const t = (el.innerText || "").trim().toLowerCase();
-        return t === "seller's description" || t === "description";
-      });
-      if (!head) return "";
-      let best = "";
-      let node = head;
-      for (let up = 0; up < 4 && node; up++, node = node.parentElement) {
-        let body = (node.innerText || "");
-        const hi = body.toLowerCase().indexOf("description");
-        if (hi === -1) continue;
-        body = body.slice(hi + "description".length);
-        body = body.split(/Location is approximate|Seller information|Send seller a message|More from Marketplace|Related items|You might also/i)[0];
-        body = body.replace(/^[\s:']+/, "").replace(/See (more|less)/gi, "").trim();
-        if (body.length > best.length && body.length < 6000) best = body;
-      }
-      return best;
+    let rawTitle = "";
+    if (modalElement) {
+      const h1El = modalElement.querySelector('h1');
+      if (h1El) rawTitle = h1El.innerText;
+    }
+    if (!rawTitle) {
+      rawTitle = document.querySelector('meta[property="og:title"]')?.content || document.title || "";
     }
 
-    const ogDesc = (document.querySelector('meta[property="og:description"]')?.content) || "";
-    const domDesc = _descFromDom();
-    let description = (domDesc.length > ogDesc.length ? domDesc : ogDesc) || "";
-    description = description
-      .split(/\bAbout this vehicle\b/i)[0]
-      .replace(/\s*See (more|less)\s*$/i, "")
-      .trim();
-    description = description
-      .split("\n")
-      .map(line => line
-        .replace(/\(?\b(Clean|Salvage|Rebuilt|Lien|Lemon)\s+title\b\)?/ig, "")
-        .replace(/\s*[·|,;:-]\s*$/g, "")
-        .trim())
-      .filter(Boolean)
-      .join("\n")
-      .trim();
-
-    function _grab(re, i) { const m = pageText.match(re); return m ? m[i].trim() : ""; }
-    const details = {
-      exterior_color: _grab(/Exterior color:[ \t]*([^\n\u00b7|]+)/i, 1),
-      interior_color: _grab(/Interior color:[ \t]*([^\n\u00b7|]+)/i, 1),
-      fuel_economy: _grab(/([0-9.]+\s*MPG city[^\n]*)/i, 1),
-      title_status: (pageText.match(/\b(Clean|Salvage|Rebuilt|Lien|Lemon)\s+title\b/i) || [""])[0],
-    };
-
-    const webStoreLabels = ["more items from this seller", "related items", "suggested listings", "sponsored", "recommended for you"];
+    const recommendationLabels = ["more items from this seller", "related items", "suggested listings", "sponsored", "recommended for you"];
     let recommendationCutoffY = Infinity;
-
     activeContext.querySelectorAll('span, h2, h3, div').forEach(el => {
       const text = el.innerText?.trim().toLowerCase();
-      if (text && webStoreLabels.some(label => text.includes(label))) {
-        const rect = el.getBoundingClientRect();
-        const absoluteTop = rect.top + window.scrollY;
-        if (absoluteTop > 0 && absoluteTop < recommendationCutoffY) {
-          recommendationCutoffY = absoluteTop;
-        }
+      if (text && recommendationLabels.some(label => text.includes(label))) {
+        const absoluteTop = el.getBoundingClientRect().top + window.scrollY;
+        if (absoluteTop > 0 && absoluteTop < recommendationCutoffY) recommendationCutoffY = absoluteTop;
       }
     });
 
-    const filteredImages = [];
+    const images = [];
     const seenMainImageUrls = [];
-
-    function captureVisibleImages() {
-      // Auto-enrich opens a full listing page, where Facebook may render
-      // recommendation cards nearby. Only save the current main carousel image;
-      // as the loop advances, this collects the real listing photos without
-      // grabbing images from other places on the page.
-      const src = getMainImageSrc();
-      if (src && src.includes('scontent') && !filteredImages.includes(src)) {
-        filteredImages.push(src);
-      }
-    }
 
     function getMainImageSrc() {
       const allImgs = Array.from(activeContext.querySelectorAll('img'));
       let mainImg = null;
       let maxArea = 0;
-
       allImgs.forEach(img => {
         const rect = img.getBoundingClientRect();
-        const imgAbsoluteTop = rect.top + window.scrollY;
-        if (imgAbsoluteTop < recommendationCutoffY) {
+        const absoluteTop = rect.top + window.scrollY;
+        if (absoluteTop < recommendationCutoffY) {
           const area = rect.width * rect.height;
           if (area > maxArea && rect.width > 250) {
             maxArea = area;
@@ -790,15 +716,19 @@ async function localScraperRoutine() {
       return mainImg ? mainImg.src : null;
     }
 
+    function captureVisibleImage() {
+      const src = getMainImageSrc();
+      if (src && src.includes("scontent") && !images.includes(src)) images.push(src);
+    }
+
     function getFreshNextButton() {
       const allImgs = Array.from(activeContext.querySelectorAll('img'));
       let mainImg = null;
       let maxArea = 0;
-
       allImgs.forEach(img => {
         const rect = img.getBoundingClientRect();
-        const imgAbsoluteTop = rect.top + window.scrollY;
-        if (imgAbsoluteTop < recommendationCutoffY) {
+        const absoluteTop = rect.top + window.scrollY;
+        if (absoluteTop < recommendationCutoffY) {
           const area = rect.width * rect.height;
           if (area > maxArea && rect.width > 250) {
             maxArea = area;
@@ -806,35 +736,27 @@ async function localScraperRoutine() {
           }
         }
       });
-
       if (!mainImg) return null;
       const imgRect = mainImg.getBoundingClientRect();
       const imgMiddleY = imgRect.top + (imgRect.height / 2);
-
       const interactiveElements = Array.from(activeContext.querySelectorAll('div[role="button"], button, [aria-label*="Next"], [aria-label*="next"]'));
-
       return interactiveElements.find(el => {
         const btnRect = el.getBoundingClientRect();
         if (btnRect.width === 0 || btnRect.height === 0 || btnRect.width > 120) return false;
-
         const btnCenterX = btnRect.left + btnRect.width / 2;
         const btnCenterY = btnRect.top + btnRect.height / 2;
-
-        const insideVerticalTrack = Math.abs(btnCenterY - imgMiddleY) < 120;
-        const onRightEdge = (btnCenterX > imgRect.left + imgRect.width * 0.5) && (btnCenterX < imgRect.right + 60);
-
-        return insideVerticalTrack && onRightEdge;
+        return Math.abs(btnCenterY - imgMiddleY) < 120 &&
+          btnCenterX > imgRect.left + imgRect.width * 0.5 &&
+          btnCenterX < imgRect.right + 60;
       });
     }
 
-    captureVisibleImages();
-
-    let initialMainSrc = getMainImageSrc();
+    captureVisibleImage();
+    const initialMainSrc = getMainImageSrc();
     if (initialMainSrc) seenMainImageUrls.push(initialMainSrc);
 
     for (let i = 0; i < 40; i++) {
-      let nextButton = getFreshNextButton();
-
+      const nextButton = getFreshNextButton();
       if (nextButton) {
         nextButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
       } else {
@@ -842,15 +764,10 @@ async function localScraperRoutine() {
         document.dispatchEvent(new KeyboardEvent('keydown', eventConfig));
         document.dispatchEvent(new KeyboardEvent('keyup', eventConfig));
       }
-
       await new Promise(resolve => setTimeout(resolve, 850));
-      captureVisibleImages();
-
-      let dynamicMainSrc = getMainImageSrc();
-      if (!dynamicMainSrc || seenMainImageUrls.includes(dynamicMainSrc)) {
-        break;
-      }
-
+      captureVisibleImage();
+      const dynamicMainSrc = getMainImageSrc();
+      if (!dynamicMainSrc || seenMainImageUrls.includes(dynamicMainSrc)) break;
       seenMainImageUrls.push(dynamicMainSrc);
     }
 
@@ -858,13 +775,10 @@ async function localScraperRoutine() {
       success: true,
       timestamp: new Date().toISOString(),
       url: window.location.href,
-      title: cleanTitle,
-      price: price,
-      mileage: mileage,
-      transmission: transmission,
-      description: description || "Could not isolate description block.",
-      details: details,
-      images: filteredImages.slice(0, 40)
+      raw_title: rawTitle,
+      page_text: activeContext.innerText || "",
+      html: activeContext.outerHTML || document.documentElement.outerHTML || "",
+      images: images.slice(0, 40),
     };
   } catch (err) {
     return { success: false, error: err.message };
@@ -874,89 +788,21 @@ async function localScraperRoutine() {
 async function profileScanRoutine() {
   try {
     const seenCounts = [];
-    const allById = new Map();
+    const rawCardsById = new Map();
     const maxScrolls = 20;
     let lastCount = 0;
     let stableCount = 0;
 
-    function findObjects(obj, typename, depth = 0) {
-      if (depth > 60 || !obj) return [];
-      if (Array.isArray(obj)) {
-        return obj.flatMap(item => findObjects(item, typename, depth + 1));
-      }
-      if (typeof obj === "object") {
-        const own = obj.__typename === typename ? [obj] : [];
-        return own.concat(Object.values(obj).flatMap(value => findObjects(value, typename, depth + 1)));
-      }
-      return [];
-    }
-
-    function parseListing(item) {
-      const price = item.listing_price || {};
-      const seller = item.marketplace_listing_seller || {};
-      const photos = [];
-      const primary = item.primary_listing_photo?.image?.uri;
-      if (primary) photos.push(primary);
-      (item.listing_photos || []).forEach(photo => {
-        const uri = photo?.image?.uri;
-        if (uri && !photos.includes(uri)) photos.push(uri);
-      });
-
-      const fbId = String(item.id || "");
-      return {
-        fb_listing_id: fbId,
-        fb_url: `https://www.facebook.com/marketplace/item/${fbId}/`,
-        title: item.marketplace_listing_title || "Unknown Vehicle",
-        price: price.formatted_amount || "Call for price",
-        description: item.redacted_description?.text || "",
-        photos,
-        is_sold: !!item.is_sold,
-        is_pending: !!item.is_pending,
-        seller_id: seller.id || "",
-        seller_name: seller.name || "",
-      };
-    }
-
-    function getSellerIdsFromDom() {
-      const allLinks = Array.from(document.querySelectorAll(
-        'a[href*="/marketplace/item/"], a[href*="/commerce/listing/"]'
-      ));
-      const headings = Array.from(document.querySelectorAll(
+    function captureHeadings() {
+      return Array.from(document.querySelectorAll(
         '[role="heading"], h1, h2, h3, h4, span[dir="auto"], [aria-level]'
-      ));
-
-      function isSellerListingsHeading(el) {
-        const raw = (el.textContent || "").replace(/\s+/g, " ").trim();
-        const text = raw.toLowerCase();
-        if (!text || text.length > 80) return false;
-        // Listing cards can have titles like "10h·Test Car Listings". Those are
-        // not the seller section heading and would pull in recommendation links.
-        if (/[·•]/.test(raw) || /\$[0-9,]+/.test(raw) || /^\d+\s*[smhdw]\b/i.test(raw)) return false;
-        return text === "your listings" || /(?:'|’)s listings$/.test(text);
-      }
-
-      const sellerHeading = headings.find(isSellerListingsHeading);
-
-      const relevant = sellerHeading
-        ? allLinks.filter(anchor => (sellerHeading.compareDocumentPosition(anchor) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0)
-        : [];
-
-      const ids = new Set();
-      relevant.forEach(anchor => {
-        const href = decodeURIComponent(anchor.href || anchor.getAttribute("href") || "");
-        const match = href.match(/\/(?:marketplace\/item|commerce\/listing)\/(\d+)/);
-        if (match) ids.add(match[1]);
-      });
-
-      return {
-        ids,
-        total_links: allLinks.length,
-        strategy: sellerHeading ? "after_seller_heading" : "no_seller_heading",
-        heading_text: sellerHeading ? sellerHeading.textContent.trim() : "",
-      };
+      )).map(el => ({
+        text: (el.textContent || '').replace(/s+/g, ' ').trim(),
+        y: el.getBoundingClientRect().top + window.scrollY,
+      })).filter(item => item.text);
     }
 
-    function collectAnchorListings(whitelist) {
+    function collectRawCards() {
       const rows = [];
       const seen = new Set();
       const anchors = Array.from(document.querySelectorAll(
@@ -964,93 +810,52 @@ async function profileScanRoutine() {
       ));
 
       anchors.forEach(anchor => {
-        const href = decodeURIComponent(anchor.href || anchor.getAttribute("href") || "");
+        const href = decodeURIComponent(anchor.href || anchor.getAttribute('href') || '');
         const idMatch = href.match(/\/(?:marketplace\/item|commerce\/listing)\/(\d+)/);
         if (!idMatch) return;
         const fbId = idMatch[1];
-        if (whitelist && whitelist.size && !whitelist.has(fbId)) return;
         if (seen.has(fbId)) return;
         seen.add(fbId);
 
         let box = anchor;
         for (let i = 0; i < 6 && box && box.parentElement; i++) {
-          const text = (box.innerText || "").trim();
+          const text = (box.innerText || '').trim();
           const rect = box.getBoundingClientRect();
-          if (text.includes("$") && rect.width > 120 && rect.height > 80) break;
+          if (text.includes('$') && rect.width > 120 && rect.height > 80) break;
           box = box.parentElement;
         }
 
-        const text = (box?.innerText || anchor.innerText || "").trim();
-        const lines = text.split(/\n+/).map(x => x.trim()).filter(Boolean);
-        const priceLine = lines.find(line => /\$[0-9,]+/.test(line)) || "";
-        const priceMatch = priceLine.match(/\$[0-9,]+/);
-        const title = (lines.find(line =>
-          line !== priceLine &&
-          !/listed|marketplace|details|message|seller|available|sold/i.test(line) &&
-          line.length > 3
-        ) || anchor.getAttribute("aria-label") || `Facebook listing ${fbId}`).replace(/\s+/g, " ").trim();
+        const text = (box?.innerText || anchor.innerText || '').trim();
         const img = box?.querySelector?.('img[src*="scontent"]') || anchor.querySelector?.('img[src*="scontent"]');
 
         rows.push({
           fb_listing_id: fbId,
-          fb_url: `https://www.facebook.com/marketplace/item/${fbId}/`,
-          title,
-          price: priceMatch ? priceMatch[0] : "",
-          description: "",
-          photos: img?.src ? [img.src] : [],
-          is_sold: /\bsold\b/i.test(text),
+          href: 'https://www.facebook.com/marketplace/item/' + fbId + '/',
+          text,
+          image_url: img?.src || '',
+          y: anchor.getBoundingClientRect().top + window.scrollY,
         });
       });
       return rows;
     }
 
-    function collectJsonListings(whitelist) {
-      const rows = [];
-      const seen = new Set();
-      const scripts = Array.from(document.querySelectorAll('script[type="application/json"]'));
-      scripts.forEach(script => {
-        try {
-          const data = JSON.parse(script.textContent || "{}");
-          const items = findObjects(data, "MarketplaceProductItem")
-            .concat(findObjects(data, "GroupCommerceProductItem"));
-          items.forEach(item => {
-            const row = parseListing(item);
-            if (!row.fb_listing_id || row.title === "Unknown Vehicle") return;
-            if (whitelist && whitelist.size && !whitelist.has(row.fb_listing_id)) return;
-            if (seen.has(row.fb_listing_id)) return;
-            seen.add(row.fb_listing_id);
-            rows.push(row);
-          });
-        } catch (e) {}
-      });
-      return rows;
-    }
-
     async function collectAllVisible() {
-      const dom = getSellerIdsFromDom();
-      const whitelist = dom.ids.size ? dom.ids : null;
-      const rows = collectJsonListings(whitelist);
-      collectAnchorListings(whitelist).forEach(row => {
-        if (!rows.some(existing => existing.fb_listing_id === row.fb_listing_id)) rows.push(row);
-      });
-      return { rows, dom };
+      return {
+        rows: collectRawCards(),
+        headings: captureHeadings(),
+      };
     }
 
     for (let i = 0; i < maxScrolls; i++) {
-      const { rows, dom } = await collectAllVisible();
+      const { rows, headings } = await collectAllVisible();
       rows.forEach(row => {
-        const existing = allById.get(row.fb_listing_id);
-        if (!existing || (row.title && existing.title.startsWith("Facebook listing"))) {
-          allById.set(row.fb_listing_id, row);
+        const existing = rawCardsById.get(row.fb_listing_id);
+        if (!existing || (row.text || '').length > (existing.text || '').length) {
+          rawCardsById.set(row.fb_listing_id, row);
         }
       });
-      const count = allById.size;
-      seenCounts.push({
-        count,
-        total_links: dom.total_links,
-        strategy: dom.strategy,
-        heading_text: dom.heading_text,
-      });
+      const count = rawCardsById.size;
+      seenCounts.push({ count, total_headings: headings.length });
       if (count <= lastCount) stableCount += 1;
       else stableCount = 0;
       lastCount = count;
@@ -1064,21 +869,18 @@ async function profileScanRoutine() {
     window.scrollTo(0, 0);
     await new Promise(resolve => setTimeout(resolve, 1000));
     const final = await collectAllVisible();
-    final.rows.forEach(row => allById.set(row.fb_listing_id, row));
-    const listings = Array.from(allById.values());
+    final.rows.forEach(row => rawCardsById.set(row.fb_listing_id, row));
 
     return {
       success: true,
       profile_url: window.location.href,
-      count: listings.length,
+      count: rawCardsById.size,
       seen_counts: seenCounts,
-      final_dom: {
-        total_links: final.dom.total_links,
-        strategy: final.dom.strategy,
-        heading_text: final.dom.heading_text,
-        seller_ids: Array.from(final.dom.ids),
-      },
-      listings,
+      page_text: document.body.innerText || '',
+      html: document.documentElement.outerHTML || '',
+      headings: final.headings,
+      raw_cards: Array.from(rawCardsById.values()),
+      listings: [],
     };
   } catch (err) {
     return { success: false, error: err.message };

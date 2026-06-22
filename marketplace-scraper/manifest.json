@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Marketplace Inventory Sync",
-  "version": "1.6",
-  "description": "Scrapes a Facebook Marketplace listing and saves it to the dealer site.",
+  "version": "2.0",
+  "description": "Syncs Facebook Marketplace inventory through the dealer service.",
   "action": {
     "default_popup": "popup.html"
   },
