@@ -4,7 +4,6 @@ const DEFAULT_DEALER_KEY = "nuc2024";
 const DEFAULT_FACEBOOK_PROFILE_URL = "https://www.facebook.com/marketplace/profile/100057362652664";
 const AUTO_ALARM = "nuc-auto-enrich";
 const AUTO_INTERVAL_MINUTES = 30;
-const MAX_PROFILE_LISTING_CANDIDATES = 6;
 
 let isAutoRunning = false;
 let cancelRequested = false;
@@ -359,11 +358,6 @@ async function runProfileScanOnly(manual) {
       await saveLastAuto(message);
       return { ok: false, message };
     }
-    if (scannedCount > MAX_PROFILE_LISTING_CANDIDATES) {
-      const message = `Profile scan stopped: captured ${scannedCount} listing candidates, which is more than the ${MAX_PROFILE_LISTING_CANDIDATES}-listing safety limit. Nothing was imported.`;
-      await saveLastAuto(message);
-      return { ok: false, message };
-    }
     const importResult = await importProfileScan(scan, settings);
     throwIfCancelled();
     const customerSyncResult = await syncCustomerBackend(settings, dealer);
@@ -437,7 +431,14 @@ async function importProfileScan(scan, settings) {
       listings: scan.listings || [],
     }),
   });
-  if (!puppetResponse.ok) throw new Error(`Puppet profile import failed: ${puppetResponse.status}`);
+  if (!puppetResponse.ok) {
+    let errorDetail = "";
+    try {
+      const errorBody = await puppetResponse.json();
+      errorDetail = errorBody.detail ? ` ${errorBody.detail}` : "";
+    } catch (e) {}
+    throw new Error(`Puppet profile import failed: ${puppetResponse.status}.${errorDetail}`);
+  }
   return puppetResponse.json();
 }
 
