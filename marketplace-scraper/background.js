@@ -213,7 +213,7 @@ function isCustomerBackend(settings) {
 
 function needsDetailsEndpoint(settings) {
   if (settings.dealerSlug) {
-    return `${settings.apiBase}/api/dealers/${encodeURIComponent(settings.dealerSlug)}/needs-details`;
+    return `${settings.apiBase}/api/dealers/${encodeURIComponent(settings.dealerSlug)}/needs-details?key=${encodeURIComponent(settings.dealerKey)}`;
   }
   return `${settings.apiBase}/api/needs-details`;
 }
