@@ -8,8 +8,8 @@ import { Card, CardContent } from "@/components/ui/card";
 export const Route = createFileRoute("/admin")({
   head: () => ({
     meta: [
-      { title: "Inventory Admin" },
-      { name: "description", content: "Dealer inventory admin." },
+      { title: "Neighborhood Used Cars Inventory Admin" },
+      { name: "description", content: "Neighborhood Used Cars inventory admin." },
     ],
   }),
   component: AdminPage,
@@ -27,6 +27,7 @@ function configuredDealerSlug() {
 type Listing = {
   id: number;
   title: string;
+  display_title?: string;
   price?: string;
   mileage?: string;
   transmission?: string;
@@ -37,7 +38,7 @@ type Listing = {
   permanent_photos?: string[];
 };
 
-type Draft = Pick<Listing, "title" | "price" | "mileage" | "transmission" | "description" | "facebook_source_url">;
+type Draft = Pick<Listing, "display_title">;
 
 function AdminPage() {
   const dealerSlug = configuredDealerSlug();
@@ -47,7 +48,7 @@ function AdminPage() {
   });
   const [rows, setRows] = useState<Listing[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [draft, setDraft] = useState<Draft>({ title: "", price: "", mileage: "", transmission: "", description: "", facebook_source_url: "" });
+  const [draft, setDraft] = useState<Draft>({ display_title: "" });
   const [status, setStatus] = useState("Enter dealer key to load inventory.");
   const [loading, setLoading] = useState(false);
   const [draggedId, setDraggedId] = useState<number | null>(null);
@@ -64,12 +65,7 @@ function AdminPage() {
   function edit(row: Listing) {
     setSelectedId(row.id);
     setDraft({
-      title: row.title || "",
-      price: row.price || "",
-      mileage: row.mileage || "",
-      transmission: row.transmission || "",
-      description: row.description || "",
-      facebook_source_url: row.facebook_source_url || "",
+      display_title: row.display_title || "",
     });
   }
 
@@ -98,16 +94,16 @@ function AdminPage() {
   async function save() {
     if (!selected) return;
     setLoading(true);
-    setStatus("Saving listing...");
+    setStatus("Saving website title...");
     try {
       const res = await fetch(endpoint(`/${selected.id}`), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key, ...draft }),
+        body: JSON.stringify({ key, display_title: draft.display_title || "" }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Save failed.");
-      setStatus("Listing saved.");
+      setStatus("Website title saved.");
       await load();
     } catch (err: any) {
       setStatus(err.message || "Save failed.");
@@ -137,8 +133,6 @@ function AdminPage() {
   }
 
   async function saveActiveOrder(nextIds: number[]) {
-    const sameOrder = nextIds.join(",") === activeRows.map((item) => item.id).join(",");
-    if (sameOrder) return;
     setLoading(true);
     setStatus("Saving display order...");
     try {
@@ -175,7 +169,10 @@ function AdminPage() {
 
   async function dropActive() {
     if (!draggedId) return;
-    await saveActiveOrder(pendingOrderIds || rows.filter((row) => !row.is_sold).map((row) => row.id));
+    setDraggedId(null);
+    if (pendingOrderIds) {
+      setStatus("Order changed. Click Save Order to keep it.");
+    }
   }
 
   async function remove(row: Listing) {
@@ -216,6 +213,11 @@ function AdminPage() {
       <main className="mx-auto grid max-w-7xl gap-5 px-5 py-5 lg:grid-cols-[360px_1fr]">
         <aside className="space-y-4">
           <div className="rounded-md border border-zinc-200 bg-white p-4 text-sm text-zinc-600">{status}</div>
+          {pendingOrderIds && (
+            <Button className="w-full" onClick={() => saveActiveOrder(pendingOrderIds)} disabled={loading}>
+              <Save className="mr-2 h-4 w-4" />Save Order
+            </Button>
+          )}
           <InventoryList
             title={`Active (${activeRows.length})`}
             rows={activeRows}
@@ -229,7 +231,6 @@ function AdminPage() {
             onDrop={dropActive}
             onDragEnd={() => {
               setDraggedId(null);
-              setPendingOrderIds(null);
             }}
           />
           <InventoryList title={`Sold (${soldRows.length})`} rows={soldRows} selectedId={selectedId} onEdit={edit} onSold={setSold} onDelete={remove} />
@@ -245,7 +246,7 @@ function AdminPage() {
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <div className="text-xs font-bold uppercase tracking-wide text-zinc-500">Editing #{selected.id}</div>
-                      <h2 className="mt-1 text-xl font-bold">{selected.title}</h2>
+                      <h2 className="mt-1 text-xl font-bold">{selected.display_title || selected.title}</h2>
                     </div>
                     <div className="flex gap-2">
                       <Button onClick={save} disabled={loading}><Save className="mr-2 h-4 w-4" />Save</Button>
@@ -257,23 +258,10 @@ function AdminPage() {
                   </div>
 
                   <div className="grid gap-3 md:grid-cols-2">
-                    <Field label="Title" value={draft.title || ""} onChange={(value) => setDraft({ ...draft, title: value })} />
-                    <Field label="Price" value={draft.price || ""} onChange={(value) => setDraft({ ...draft, price: value })} />
-                    <Field label="Mileage" value={draft.mileage || ""} onChange={(value) => setDraft({ ...draft, mileage: value })} />
-                    <Field label="Transmission" value={draft.transmission || ""} onChange={(value) => setDraft({ ...draft, transmission: value })} />
                     <div className="md:col-span-2">
-                      <Field label="Facebook URL" value={draft.facebook_source_url || ""} onChange={(value) => setDraft({ ...draft, facebook_source_url: value })} />
+                      <Field label="Website Display Title" value={draft.display_title || ""} onChange={(value) => setDraft({ ...draft, display_title: value })} />
                     </div>
                   </div>
-
-                  <label className="block">
-                    <span className="text-xs font-bold uppercase tracking-wide text-zinc-500">Description</span>
-                    <textarea
-                      value={draft.description || ""}
-                      onChange={(e) => setDraft({ ...draft, description: e.target.value })}
-                      className="mt-1 min-h-44 w-full rounded-md border border-zinc-300 bg-white p-3 text-sm outline-none focus:border-zinc-950"
-                    />
-                  </label>
 
                   <div className="grid grid-cols-3 gap-3 md:grid-cols-6">
                     {(selected.permanent_photos || []).slice(0, 12).map((url) => (
@@ -353,7 +341,7 @@ function InventoryList({
           >
             <div className="flex items-start gap-2">
               <button onClick={() => onEdit(row)} className="block min-w-0 flex-1 text-left">
-                <div className="line-clamp-2 text-sm font-semibold">{row.title}</div>
+                <div className="line-clamp-2 text-sm font-semibold">{row.display_title || row.title}</div>
                 <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
                   <span>{row.price || "Call for price"}</span>
                   {row.needs_enrich && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-800">Needs details</span>}

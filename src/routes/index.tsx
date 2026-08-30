@@ -53,6 +53,38 @@ function dealerLocation(address?: string) {
   return parts.length >= 2 ? parts.slice(-2).join(", ") : address;
 }
 
+function trackLeadClick(
+  dealerSlug: string,
+  eventType: "click_text" | "click_call",
+  meta: Record<string, unknown> = {},
+) {
+  if (typeof window === "undefined") return;
+  const body = JSON.stringify({
+    event_type: eventType,
+    page_url: window.location.href,
+    vehicle_id: typeof meta.vehicle_id === "number" ? meta.vehicle_id : undefined,
+    vehicle_title: typeof meta.vehicle_title === "string" ? meta.vehicle_title : "",
+    meta,
+  });
+  const url = `${PUBLIC_INVENTORY_API}/api/dealers/${encodeURIComponent(dealerSlug)}/analytics/event`;
+  try {
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon(url, new Blob([body], { type: "application/json" }));
+      return;
+    }
+    fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+      keepalive: true,
+    }).catch(() => {});
+  } catch (e) {}
+}
+
+function vehicleDisplayTitle(vehicle: any) {
+  return String(vehicle?.display_title || vehicle?.title || "").trim();
+}
+
 function Index() {
   const dealerSlug = configuredDealerSlug();
   const { data: dealer } = useQuery({
@@ -126,8 +158,9 @@ function Index() {
       .filter((v: any) => {
         if (v.is_sold) return false;
         const q = query.trim().toLowerCase();
-        const matchesQuery = !q || v.title.toLowerCase().includes(q);
-        const body = inferBody(v.title);
+        const shownTitle = vehicleDisplayTitle(v);
+        const matchesQuery = !q || `${shownTitle} ${v.title || ""}`.toLowerCase().includes(q);
+        const body = inferBody(shownTitle || v.title || "");
         const matchesFilter = filter === "All" || body === filter;
         return matchesQuery && matchesFilter;
       })
@@ -142,16 +175,16 @@ function Index() {
   return (
     <div className="page-zoom min-h-screen bg-background pb-20 text-foreground md:pb-0">
       {/* Nav */}
-      <header className="sticky top-0 z-40 border-b border-border/60 bg-background/80 backdrop-blur-md">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-3">
-          <a href="#" className="flex min-w-0 items-center gap-2 sm:gap-3">
-            <NucLogo size={52} />
+      <header className="sticky top-0 z-40 border-b border-border/70 bg-background/95 shadow-sm backdrop-blur-md">
+        <div className="container-app grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 py-2.5 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:py-3">
+          <a href="#" className="flex min-w-0 items-center gap-2.5 sm:gap-3">
+            <NucLogo size={50} />
             <div className="min-w-0 leading-tight">
-              <div className="whitespace-nowrap text-sm font-black uppercase tracking-wide">{dealerName}</div>
+              <div className="whitespace-nowrap text-base font-black uppercase tracking-wide text-ink sm:text-lg">{dealerName}</div>
               <div className="hidden text-xs text-muted-foreground sm:block">{locationText}</div>
             </div>
           </a>
-          <nav className="hidden items-center gap-8 text-sm font-medium md:flex">
+          <nav className="hidden items-center justify-center gap-1 text-sm font-semibold md:flex">
             {[
               { href: "#inventory", label: "Inventory" },
               { href: "#about", label: "About" },
@@ -161,21 +194,21 @@ function Index() {
               <a
                 key={l.href}
                 href={l.href}
-                className="relative py-1 text-muted-foreground transition-colors hover:text-foreground after:absolute after:inset-x-0 after:-bottom-1 after:h-0.5 after:scale-x-0 after:bg-primary after:transition-transform after:content-[''] hover:after:scale-x-100"
+                className="rounded-md px-3 py-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               >
                 {l.label}
               </a>
             ))}
           </nav>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center justify-end gap-2">
             <Button asChild size="sm" variant="outline" className="hidden sm:inline-flex">
-              <a href={generalSmsHref}>
+              <a href={generalSmsHref} onClick={() => trackLeadClick(dealerSlug, "click_text", { location: "nav" })}>
                 <MessageSquare className="mr-1 h-4 w-4" />Text Us
               </a>
             </Button>
             {dealerPhone && (
               <Button asChild size="sm" className="hidden shadow-sm shadow-primary/20 sm:inline-flex">
-                <a href={`tel:${dealerPhone}`}>
+                <a href={`tel:${dealerPhone}`} onClick={() => trackLeadClick(dealerSlug, "click_call", { location: "nav" })}>
                   <Phone className="mr-1 h-4 w-4" />Call
                 </a>
               </Button>
@@ -204,11 +237,11 @@ function Index() {
 
           <div className="mt-8 flex max-w-xl flex-col gap-3 sm:flex-row">
             <Button size="lg" asChild className="h-12 shadow-md shadow-primary/25">
-              <a href={generalSmsHref}><MessageSquare className="mr-2 h-4 w-4" />Text What You Need</a>
+              <a href={generalSmsHref} onClick={() => trackLeadClick(dealerSlug, "click_text", { location: "hero" })}><MessageSquare className="mr-2 h-4 w-4" />Text What You Need</a>
             </Button>
             {dealerPhone && (
               <Button size="lg" variant="outline" asChild className="h-12 bg-background/80">
-                <a href={`tel:${dealerPhone}`}><Phone className="mr-2 h-4 w-4" />Call {dealerPhoneText}</a>
+                <a href={`tel:${dealerPhone}`} onClick={() => trackLeadClick(dealerSlug, "click_call", { location: "hero" })}><Phone className="mr-2 h-4 w-4" />Call {dealerPhoneText}</a>
               </Button>
             )}
           </div>
@@ -243,38 +276,38 @@ function Index() {
       </section>
 
       {/* Trust strip */}
-      <section className="border-y border-border bg-muted/40">
-        <div className="mx-auto grid max-w-7xl grid-cols-2 gap-4 px-6 py-8 md:grid-cols-4">
+      <section className="border-y border-border bg-surface">
+        <div className="container-app grid grid-cols-2 gap-3 py-7 md:grid-cols-4 md:gap-4">
           {[
             { icon: DollarSign, label: "Most Cars Under $5K" },
             { icon: BadgeCheck, label: "Clean Titles" },
             { icon: ShieldCheck, label: "Freshly Inspected" },
             { icon: Wrench, label: "Runs and Drives" },
           ].map((f) => (
-            <div key={f.label} className="flex items-center gap-3 rounded-xl border border-border/60 bg-card px-4 py-3 shadow-sm">
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+            <div key={f.label} className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 shadow-sm transition-shadow hover:shadow-md">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                 <f.icon className="h-5 w-5" />
               </span>
-              <span className="text-sm font-medium leading-tight">{f.label}</span>
+              <span className="text-sm font-semibold leading-tight text-ink">{f.label}</span>
             </div>
           ))}
         </div>
       </section>
 
       {/* Inventory */}
-      <section id="inventory" className="mx-auto max-w-7xl px-6 py-20">
-        <div className="flex flex-col items-start justify-between gap-4 md:flex-row md:items-end">
+      <section id="inventory" className="container-app py-16 md:py-20">
+        <div className="flex flex-col items-start justify-between gap-5 md:flex-row md:items-end">
           <div>
-            <span className="text-sm font-semibold uppercase tracking-wider text-primary">On the lot now</span>
-            <h2 className="mt-1 text-3xl font-bold tracking-tight md:text-4xl">Current Inventory</h2>
+            <span className="eyebrow">On the lot now</span>
+            <h2 className="section-rule mt-2 text-3xl font-bold tracking-tight text-ink md:text-4xl">Current Inventory</h2>
             <p className="mt-2 text-muted-foreground">Updated regularly — what you see is what's on the lot.</p>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex w-full flex-wrap gap-2 md:w-auto md:justify-end">
             {FILTERS.map((f) => (
               <button
                 key={f}
                 onClick={() => setFilter(f)}
-                className={`rounded-full border px-4 py-1.5 text-sm font-medium transition-colors ${
+                className={`rounded-full border px-4 py-2 text-xs font-bold uppercase tracking-wide transition-colors ${
                   filter === f
                     ? "border-primary bg-primary text-primary-foreground shadow-sm shadow-primary/30"
                     : "border-border bg-background hover:bg-muted"
@@ -286,11 +319,11 @@ function Index() {
           </div>
         </div>
 
-        <div className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {isLoading
             ? Array.from({ length: 3 }).map((_, i) => (
-                <div key={i} className="rounded-xl border border-border overflow-hidden animate-pulse">
-                  <div className="h-36 bg-muted" />
+                <div key={i} className="animate-pulse overflow-hidden rounded-xl border border-border bg-card">
+                  <div className="aspect-[16/10] bg-muted" />
                   <div className="p-4 space-y-3">
                     <div className="h-4 bg-muted rounded w-3/4" />
                     <div className="h-6 bg-muted rounded w-1/3" />
@@ -301,7 +334,7 @@ function Index() {
                 </div>
               ))
             : vehicles.map((v: any) => (
-                <VehicleCard key={v.id} vehicle={v} dealerPhone={dealerPhone} dealerPhoneDisplay={dealerPhoneText} locationText={locationText} />
+                <VehicleCard key={v.id} vehicle={v} dealerSlug={dealerSlug} dealerPhone={dealerPhone} dealerPhoneDisplay={dealerPhoneText} locationText={locationText} />
               ))
           }
         </div>
@@ -314,11 +347,11 @@ function Index() {
       </section>
 
       {/* About */}
-      <section id="about" className="bg-muted/40 py-20">
-        <div className="mx-auto grid max-w-7xl gap-12 px-6 md:grid-cols-2 md:items-center">
+      <section id="about" className="bg-surface py-16 md:py-20">
+        <div className="container-app grid gap-10 md:grid-cols-2 md:items-center">
           <div>
-            <span className="text-sm font-semibold uppercase tracking-wider text-primary">About us</span>
-            <h2 className="mt-1 text-3xl font-bold tracking-tight md:text-4xl">Cheap cars that actually run</h2>
+            <span className="eyebrow">About us</span>
+            <h2 className="section-rule mt-2 text-3xl font-bold tracking-tight text-ink md:text-4xl">Cheap cars that actually run</h2>
             <p className="mt-4 text-muted-foreground">
               Small family-run lot in York, PA. We sell cheap cars that actually run. Most under $5K. Every car is inspected and has a clean title.
             </p>
@@ -327,23 +360,23 @@ function Index() {
             </p>
             <div className="mt-6 flex flex-wrap gap-3">
               <Button asChild className="shadow-md shadow-primary/25">
-                <a href={generalSmsHref}><MessageSquare className="mr-2 h-4 w-4" />Text Us</a>
+                <a href={generalSmsHref} onClick={() => trackLeadClick(dealerSlug, "click_text", { location: "about" })}><MessageSquare className="mr-2 h-4 w-4" />Text Us</a>
               </Button>
               {dealerPhone && (
                 <Button variant="outline" asChild>
-                  <a href={`tel:${dealerPhone}`}><Phone className="mr-2 h-4 w-4" />Call {dealerPhoneText}</a>
+                  <a href={`tel:${dealerPhone}`} onClick={() => trackLeadClick(dealerSlug, "click_call", { location: "about" })}><Phone className="mr-2 h-4 w-4" />Call {dealerPhoneText}</a>
                 </Button>
               )}
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 gap-3 sm:gap-4">
             {[
               { k: "<$5K", v: "Most cars" },
               { k: locationText, v: "Local lot" },
               { k: "Inspected", v: "Every car" },
               { k: "Clear", v: "Straightforward deals" },
             ].map((s) => (
-              <div key={s.v} className="rounded-xl border border-border bg-card p-6 shadow-sm transition-shadow hover:shadow-md">
+              <div key={s.v} className="rounded-lg border border-border bg-card p-4 shadow-sm transition-shadow hover:shadow-md sm:p-6">
                 <div className="text-xl font-bold text-primary">{s.k}</div>
                 <div className="mt-1 text-sm text-muted-foreground">{s.v}</div>
               </div>
@@ -353,9 +386,9 @@ function Index() {
       </section>
 
       {/* Reviews */}
-      <section id="reviews" className="bg-zinc-950 py-20 text-white">
-        <div className="mx-auto max-w-6xl px-6">
-          <div className="mb-12 text-center">
+      <section id="reviews" className="bg-zinc-950 py-16 text-white md:py-20">
+        <div className="container-app">
+          <div className="mb-10 text-center">
             <div className="mb-4 flex justify-center gap-1.5">
               {Array.from({ length: 5 }).map((_, i) => (
                 <Star
@@ -372,7 +405,7 @@ function Index() {
             <p className="mt-3 text-zinc-400">Real feedback from local buyers.</p>
           </div>
 
-          <div className="grid gap-5 md:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-3">
             {[
               { name: "Adrian", text: "Probably my best experience on marketplace. Sold me a beautiful Infiniti G35x. Had one little problem with the gear shifter. Took it back and he got his mechanic to fix it. Very trustworthy, would definitely buy another car from him." },
               { name: "Lynn", text: "He was very easy to communicate with. The description was exactly what was said. Highly recommend this dealership/seller." },
@@ -383,7 +416,7 @@ function Index() {
             ].map((review) => (
               <div
                 key={review.name}
-                className="flex min-h-[220px] flex-col rounded-xl border border-white/10 bg-white/[0.04] p-6 shadow-sm transition-all hover:-translate-y-1 hover:border-primary/40 hover:bg-white/[0.06]"
+                className="flex min-h-[210px] flex-col rounded-lg border border-white/10 bg-white/[0.04] p-5 shadow-sm transition-all hover:-translate-y-1 hover:border-primary/40 hover:bg-white/[0.06]"
               >
                 <div className="flex items-center gap-3">
                   <div className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-primary text-lg font-black uppercase text-primary-foreground shadow-md shadow-primary/30">
@@ -411,9 +444,11 @@ function Index() {
       </section>
 
       {/* Contact */}
-      <section id="contact" className="bg-primary text-primary-foreground">
-        <div className="mx-auto grid max-w-7xl gap-10 px-6 py-20 md:grid-cols-3">
-          <div className="md:col-span-1">
+      <section id="contact" className="bg-background py-16 md:py-20">
+        <div className="container-app">
+          <div className="rounded-2xl border border-border bg-primary p-6 text-primary-foreground shadow-xl md:p-10">
+        <div className="grid gap-10 md:grid-cols-3">
+          <div>
             <span className="text-sm font-semibold uppercase tracking-wider text-primary-foreground/70">Get in touch</span>
             <h2 className="mt-1 text-3xl font-bold tracking-tight md:text-4xl">Come see us</h2>
             <p className="mt-3 opacity-80">Text or call first, then come by for a test drive.</p>
@@ -432,7 +467,7 @@ function Index() {
               </span>
               <div className="font-semibold">Call</div>
               <div className="text-sm opacity-80">
-                {dealerPhone ? <a href={`tel:${dealerPhone}`} className="hover:underline block">{dealerPhoneText}</a> : "Use the text button to ask about inventory."}
+                {dealerPhone ? <a href={`tel:${dealerPhone}`} onClick={() => trackLeadClick(dealerSlug, "click_call", { location: "contact" })} className="hover:underline block">{dealerPhoneText}</a> : "Use the text button to ask about inventory."}
               </div>
             </div>
             <div className="flex flex-col items-start gap-3">
@@ -441,29 +476,34 @@ function Index() {
               </span>
               <div className="font-semibold">Text</div>
               <div className="text-sm opacity-80">
-                <a href={generalSmsHref} className="hover:underline">
+                <a href={generalSmsHref} onClick={() => trackLeadClick(dealerSlug, "click_text", { location: "contact" })} className="hover:underline">
                   Ask what is available
                 </a>
               </div>
             </div>
           </div>
         </div>
+          </div>
+        </div>
       </section>
 
-      <footer className="border-t border-border bg-background">
-        <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-3 px-6 py-6 text-sm text-muted-foreground md:flex-row">
+      <footer className="border-t border-border bg-surface">
+        <div className="container-app flex flex-col items-center justify-between gap-3 py-6 text-sm text-muted-foreground md:flex-row">
           <div>© {new Date().getFullYear()} {dealerName}</div>
-          <div>{locationText}{dealerPhoneText ? ` · ${dealerPhoneText}` : ""}</div>
+          <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
+            <span>{locationText}{dealerPhoneText ? ` · ${dealerPhoneText}` : ""}</span>
+            <a href="/admin" className="underline-offset-4 hover:text-primary hover:underline">Admin</a>
+          </div>
         </div>
       </footer>
 
-      <div className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-2 gap-2 border-t border-border bg-background/95 p-3 shadow-lg backdrop-blur md:hidden">
-        <Button asChild className="h-11">
-          <a href={generalSmsHref}><MessageSquare className="mr-2 h-4 w-4" />Text Us</a>
+      <div className={`fixed inset-x-0 bottom-0 z-50 grid gap-2 border-t border-border bg-background/95 p-3 shadow-2xl backdrop-blur-md md:hidden ${dealerPhone ? "grid-cols-2" : "grid-cols-1"}`}>
+        <Button asChild className="h-11 min-w-0">
+          <a href={generalSmsHref} onClick={() => trackLeadClick(dealerSlug, "click_text", { location: "mobile_sticky" })}><MessageSquare className="mr-2 h-4 w-4" />Text Us</a>
         </Button>
         {dealerPhone && (
-          <Button asChild variant="outline" className="h-11">
-            <a href={`tel:${dealerPhone}`}><Phone className="mr-2 h-4 w-4" />Call</a>
+          <Button asChild variant="outline" className="h-11 min-w-0">
+            <a href={`tel:${dealerPhone}`} onClick={() => trackLeadClick(dealerSlug, "click_call", { location: "mobile_sticky" })}><Phone className="mr-2 h-4 w-4" />Call</a>
           </Button>
         )}
       </div>
@@ -488,11 +528,13 @@ function NucLogo({ size = 40 }: { size?: number }) {
 
 function VehicleCard({
   vehicle: v,
+  dealerSlug,
   dealerPhone,
   dealerPhoneDisplay,
   locationText,
 }: {
   vehicle: any;
+  dealerSlug: string;
   dealerPhone: string;
   dealerPhoneDisplay: string;
   locationText: string;
@@ -506,6 +548,7 @@ function VehicleCard({
     return Number.isFinite(n) ? n : null;
   })();
   const isUnder5k = priceNum !== null && priceNum > 0 && priceNum < 5000;
+  const shownTitle = vehicleDisplayTitle(v);
 
   // Hide unpopulated placeholders ("See FB listing"/"Not Found") from a thin sync entry.
   const isPlaceholder = (x: any) => !x || /^(not found|see fb listing)$/i.test(String(x).trim());
@@ -522,34 +565,34 @@ function VehicleCard({
 
   const cover = photos[0];
   const smsHref = dealerPhone
-    ? `sms:${dealerPhone}?&body=${encodeURIComponent(`Hi, I'm interested in the ${v.title}. Is it still available?`)}`
+    ? `sms:${dealerPhone}?&body=${encodeURIComponent(`Hi, I'm interested in the ${shownTitle}. Is it still available?`)}`
     : "#contact";
 
   return (
     <Dialog>
       <DialogTrigger asChild>
-        <Card className="group flex h-full cursor-pointer flex-col overflow-hidden border-border/60 transition-all hover:-translate-y-1 hover:border-primary/30 hover:shadow-lg">
-          <div className="relative aspect-[4/3] overflow-hidden bg-muted">
+        <Card className="group flex h-full cursor-pointer flex-col overflow-hidden rounded-xl border-border/80 bg-card p-0 shadow-sm transition-all hover:-translate-y-1 hover:border-primary/35 hover:shadow-xl">
+          <div className="relative aspect-[16/10] overflow-hidden bg-muted">
             {v.is_sold ? (
               <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/50">
                 <span className="rotate-[-20deg] rounded border-4 border-red-500 px-4 py-1 text-2xl font-black tracking-widest text-red-500">SOLD</span>
               </div>
             ) : isUnder5k ? (
-              <span className="absolute left-2 top-2 z-10 rounded-full bg-primary px-2.5 py-1 text-xs font-bold text-primary-foreground shadow">Under $5K</span>
+              <span className="absolute left-3 top-3 z-10 rounded-full bg-primary px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-primary-foreground shadow">Under $5K</span>
             ) : null}
             {cover ? (
-              <img src={cover} alt={v.title} className="h-full w-full object-cover" />
+              <img src={cover} alt={shownTitle} className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105" />
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground">No photo</div>
             )}
             {photos.length > 1 && (
-              <span className="absolute bottom-2 right-2 rounded-full bg-black/60 px-2 py-0.5 text-xs text-white">{photos.length} photos</span>
+              <span className="absolute bottom-3 right-3 rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm">{photos.length} photos</span>
             )}
           </div>
-          <CardContent className="p-3">
-            <h3 className="line-clamp-1 font-semibold leading-tight">{v.title}</h3>
-            <div className="mt-1 flex items-baseline gap-2">
-              <span className={`text-lg font-extrabold text-primary${v.is_sold ? " line-through opacity-60" : ""}`}>{v.price}</span>
+          <CardContent className="flex flex-1 flex-col gap-2 p-4">
+            <h3 className="line-clamp-2 min-h-[2.4em] text-sm font-bold leading-tight text-ink sm:text-base">{shownTitle}</h3>
+            <div className="mt-auto flex items-baseline gap-2 pt-1">
+              <span className={`text-xl font-extrabold text-primary${v.is_sold ? " line-through opacity-60" : ""}`}>{v.price}</span>
               {priceNum !== null && <span className="text-xs font-semibold text-muted-foreground">OBO</span>}
             </div>
           </CardContent>
@@ -568,7 +611,7 @@ function VehicleCard({
               )}
               {photos.length > 0 ? (
                 <>
-                  <img key={idx} src={photos[idx]} alt={`${v.title} photo ${idx + 1}`} className="max-h-[50vh] w-full object-contain md:max-h-full" />
+                  <img key={idx} src={photos[idx]} alt={`${shownTitle} photo ${idx + 1}`} className="max-h-[50vh] w-full object-contain md:max-h-full" />
                   {photos.length > 1 && (
                     <>
                       <button onClick={prev} className="absolute left-3 top-1/2 z-10 -translate-y-1/2 rounded-full bg-white/90 p-2 text-gray-800 shadow hover:bg-white" aria-label="Previous photo"><ChevronLeft className="h-5 w-5" /></button>
@@ -597,8 +640,8 @@ function VehicleCard({
           </div>
 
           {/* RIGHT — details + message funnel */}
-          <div className="min-w-0 p-5 sm:p-6 md:min-h-0 md:overflow-y-auto">
-            <DialogTitle className="pr-8 text-xl font-bold leading-snug sm:text-2xl">{v.title}</DialogTitle>
+          <div className="min-w-0 bg-card p-5 sm:p-6 md:min-h-0 md:overflow-y-auto">
+            <DialogTitle className="pr-8 text-xl font-bold leading-snug text-ink sm:text-2xl">{shownTitle}</DialogTitle>
             <div className="mt-1.5 flex items-baseline gap-2">
               <span className={`text-2xl font-extrabold text-primary${v.is_sold ? " line-through opacity-60" : ""}`}>{v.price}</span>
               {priceNum !== null && <span className="text-sm font-semibold text-muted-foreground">OBO</span>}
@@ -610,11 +653,11 @@ function VehicleCard({
             ) : (
               <div className="mt-5 flex flex-col gap-2">
                 <Button asChild size="lg" className="w-full">
-                  <a href={smsHref}><MessageSquare className="mr-2 h-4 w-4" />Text About This Car</a>
+                  <a href={smsHref} onClick={() => trackLeadClick(dealerSlug, "click_text", { location: "vehicle_modal", vehicle_id: v.id, vehicle_title: shownTitle })}><MessageSquare className="mr-2 h-4 w-4" />Text About This Car</a>
                 </Button>
                 {dealerPhone && (
                   <Button asChild variant="outline" size="lg" className="w-full">
-                    <a href={`tel:${dealerPhone}`}><Phone className="mr-2 h-4 w-4" />Call {dealerPhoneDisplay}</a>
+                    <a href={`tel:${dealerPhone}`} onClick={() => trackLeadClick(dealerSlug, "click_call", { location: "vehicle_modal", vehicle_id: v.id, vehicle_title: shownTitle })}><Phone className="mr-2 h-4 w-4" />Call {dealerPhoneDisplay}</a>
                   </Button>
                 )}
               </div>
